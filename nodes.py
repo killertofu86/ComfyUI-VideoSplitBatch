@@ -7,13 +7,12 @@ from aiohttp import web
 from server import PromptServer
 from comfy.model_management import InterruptProcessingException
 
-loop_indexes = {}  # Modul-Ebene
-
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
 
-@PromptServer.instance.routes.get("/videosplitbatch/autocomplete")
-async def autocomplete(request):
-    path = request.query.get("path", "")
+
+@PromptServer.instance.routes.get("/videosplitbatch/browse")
+async def browse(request):
+    path = request.query.get("path", "~/")
     path = os.path.expanduser(path)
 
     if os.path.isdir(path):
@@ -22,27 +21,22 @@ async def autocomplete(request):
         directory, prefix = os.path.split(path)
 
     if not os.path.isdir(directory):
-        return web.json_response([])
+        return web.json_response({"current": directory, "entries": []})
 
-    results = []
+    entries = []
     try:
-        entries = sorted(os.scandir(directory), key=lambda e: (not e.is_dir(), e.name))
+        for entry in sorted(os.scandir(directory), key=lambda e: (not e.is_dir(), e.name.lower())):
+            if prefix and not entry.name.lower().startswith(prefix.lower()):
+                continue
+            if entry.is_dir():
+                entries.append({"name": entry.name + "/", "path": entry.path + "/", "is_dir": True})
+            elif os.path.splitext(entry.name)[1].lower() in VIDEO_EXTS:
+                entries.append({"name": entry.name, "path": entry.path, "is_dir": False})
     except PermissionError:
-        return web.json_response([])
-    for entry in entries:
-        if not entry.name.startswith(prefix):
-            continue
-        if entry.is_dir():
-            results.append(entry.path + "/")
-        elif os.path.splitext(entry.name)[1].lower() in VIDEO_EXTS:
-            results.append(entry.path)
+        pass
 
-    return web.json_response(results[:50])
+    return web.json_response({"current": directory, "entries": entries[:100]})
 
-@PromptServer.instance.routes.get("/videosplitbatch/loop-index")
-async def get_loop_index(request):
-    node_id = request.query.get("id", "")
-    return web.json_response({"segment": loop_indexes.get(node_id, 0)})
 
 class VideoSplitBatch:
     @classmethod
@@ -58,6 +52,7 @@ class VideoSplitBatch:
 
     RETURN_TYPES = ("IMAGE", "INT", "INT")
     RETURN_NAMES = ("images", "segment_index", "total_segments")
+    OUTPUT_NODE = True
     FUNCTION = "load_segment"
     CATEGORY = "video"
 
@@ -83,10 +78,9 @@ class VideoSplitBatch:
                 print(f"[VideoSplitBatch] {video_path}: All segments done ({total_segments} total)")
                 raise InterruptProcessingException()
 
-            print(f"[VideoSplitBatch] {video_path}: Frames {start_frame}–{end_frame-1} | Segment {current_segment+1}/{total_segments}")
+            print(f"[VideoSplitBatch] {video_path}: Frames {start_frame}\u2013{end_frame-1} | Segment {current_segment+1}/{total_segments}")
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            loop_indexes[unique_id] = current_segment + 1
 
             frames = []
             for i in range(start_frame, end_frame):
@@ -103,8 +97,11 @@ class VideoSplitBatch:
         finally:
             if cap is not None:
                 cap.release()
-        return (images, current_segment, total_segments)
+
+        next_segment = current_segment + 1
+        return {"ui": {"next_segment": [next_segment], "total_segments": [total_segments]},
+                "result": (images, current_segment, total_segments)}
 
 
 NODE_CLASS_MAPPINGS = {"VideoSplitBatch": VideoSplitBatch}
-NODE_DISPLAY_NAME_MAPPINGS = {"VideoSplitBatch": "Video Split Node"}
+NODE_DISPLAY_NAME_MAPPINGS = {"VideoSplitBatch": "Video Split Batch"}

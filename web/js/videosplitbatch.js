@@ -7,24 +7,20 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "VideoSplitBatch") return;
 
-        // --- Auto-increment current_segment after execution (robust: onExecuted on prototype) ---
+        // --- Auto-increment current_segment after execution via ui return ---
         const origExecuted = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (message) {
             origExecuted?.apply(this, arguments);
-            const node = this;
-            api.fetchApi("/videosplitbatch/loop-index?id=" + node.id)
-                .then(r => r.json())
-                .then(data => {
-                    const segWidget = node.widgets?.find(w => w.name === "current_segment");
-                    if (segWidget) {
-                        segWidget.value = data.segment;
-                        app.graph.setDirtyCanvas(true);
-                    }
-                })
-                .catch(e => console.warn("[VideoSplitBatch] loop-index fetch failed", e));
+            if (message?.next_segment) {
+                const segWidget = this.widgets?.find(w => w.name === "current_segment");
+                if (segWidget) {
+                    segWidget.value = message.next_segment[0];
+                    app.graph.setDirtyCanvas(true);
+                }
+            }
         };
 
-        // --- Autocomplete for video_path ---
+        // --- Browse button for video_path ---
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             origCreated?.apply(this, arguments);
@@ -33,115 +29,108 @@ app.registerExtension({
             const pathWidget = node.widgets?.find(w => w.name === "video_path");
             if (!pathWidget) return;
 
-            // Dropdown element
-            const dropdown = document.createElement("ul");
-            Object.assign(dropdown.style, {
-                position: "fixed",
-                background: "#1e1e1e",
-                border: "1px solid #555",
-                color: "#ddd",
-                listStyle: "none",
-                margin: "0",
-                padding: "4px 0",
-                zIndex: "9999",
-                maxHeight: "200px",
-                overflowY: "auto",
-                fontFamily: "monospace",
-                fontSize: "12px",
-                display: "none",
-                minWidth: "300px",
+            // Modal overlay
+            const overlay = document.createElement("div");
+            Object.assign(overlay.style, {
+                position: "fixed", top: "0", left: "0", width: "100%", height: "100%",
+                background: "rgba(0,0,0,0.5)", zIndex: "10000", display: "none",
+                justifyContent: "center", alignItems: "center",
             });
-            document.body.appendChild(dropdown);
 
-            let debounceTimer = null;
+            const modal = document.createElement("div");
+            Object.assign(modal.style, {
+                background: "#1e1e1e", border: "1px solid #555", borderRadius: "8px",
+                padding: "12px", color: "#ddd", fontFamily: "monospace", fontSize: "13px",
+                minWidth: "450px", maxWidth: "600px", maxHeight: "70vh",
+                display: "flex", flexDirection: "column",
+            });
 
-            const fetchSuggestions = async (value) => {
+            const header = document.createElement("div");
+            Object.assign(header.style, {
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                marginBottom: "8px", paddingBottom: "8px", borderBottom: "1px solid #444",
+            });
+            const pathLabel = document.createElement("span");
+            pathLabel.style.fontWeight = "bold";
+            const closeBtn = document.createElement("button");
+            closeBtn.textContent = "\u2715";
+            Object.assign(closeBtn.style, {
+                background: "none", border: "none", color: "#ddd",
+                fontSize: "18px", cursor: "pointer",
+            });
+            closeBtn.onclick = () => overlay.style.display = "none";
+            header.appendChild(pathLabel);
+            header.appendChild(closeBtn);
+
+            const listContainer = document.createElement("div");
+            Object.assign(listContainer.style, {
+                overflowY: "auto", flex: "1", maxHeight: "55vh",
+            });
+
+            modal.appendChild(header);
+            modal.appendChild(listContainer);
+            overlay.appendChild(modal);
+            overlay.onclick = (e) => { if (e.target === overlay) overlay.style.display = "none"; };
+            document.body.appendChild(overlay);
+
+            const navigateTo = async (path) => {
                 try {
                     const resp = await api.fetchApi(
-                        "/videosplitbatch/autocomplete?path=" + encodeURIComponent(value)
+                        "/videosplitbatch/browse?path=" + encodeURIComponent(path)
                     );
-                    return await resp.json();
-                } catch {
-                    return [];
-                }
-            };
+                    const data = await resp.json();
+                    pathLabel.textContent = data.current;
+                    listContainer.innerHTML = "";
 
-            const showDropdown = (suggestions, inputEl) => {
-                dropdown.innerHTML = "";
-                if (!suggestions.length) {
-                    dropdown.style.display = "none";
-                    return;
-                }
-                const rect = inputEl.getBoundingClientRect();
-                Object.assign(dropdown.style, {
-                    display: "block",
-                    top: (rect.bottom + 4) + "px",
-                    left: rect.left + "px",
-                    width: Math.max(rect.width, 300) + "px",
-                });
-                for (const s of suggestions) {
-                    const li = document.createElement("li");
-                    li.textContent = s;
-                    Object.assign(li.style, { padding: "3px 8px", cursor: "pointer" });
-                    li.addEventListener("mouseenter", () => li.style.background = "#333");
-                    li.addEventListener("mouseleave", () => li.style.background = "");
-                    li.addEventListener("mousedown", (e) => {
-                        e.preventDefault();
-                        pathWidget.value = s;
-                        pathWidget.callback?.(s);
-                        if (pathWidget.inputEl) pathWidget.inputEl.value = s;
-                        dropdown.style.display = "none";
-                        // Directory selected → trigger another autocomplete
-                        if (s.endsWith("/")) {
-                            clearTimeout(debounceTimer);
-                            debounceTimer = setTimeout(async () => {
-                                const sug = await fetchSuggestions(s);
-                                if (pathWidget.inputEl) showDropdown(sug, pathWidget.inputEl);
-                            }, 50);
+                    // Parent directory entry
+                    if (data.current !== "/") {
+                        const parentPath = data.current.replace(/\/[^/]+\/?$/, "/");
+                        const parentRow = createRow("\uD83D\uDCC1 ..", true);
+                        parentRow.onclick = () => navigateTo(parentPath);
+                        listContainer.appendChild(parentRow);
+                    }
+
+                    for (const entry of data.entries) {
+                        const row = createRow(
+                            (entry.is_dir ? "\uD83D\uDCC1 " : "\uD83C\uDFAC ") + entry.name,
+                            entry.is_dir
+                        );
+                        if (entry.is_dir) {
+                            row.onclick = () => navigateTo(entry.path);
+                        } else {
+                            row.onclick = () => {
+                                pathWidget.value = entry.path;
+                                pathWidget.callback?.(entry.path);
+                                overlay.style.display = "none";
+                                app.graph.setDirtyCanvas(true);
+                            };
                         }
-                    });
-                    dropdown.appendChild(li);
+                        listContainer.appendChild(row);
+                    }
+                } catch (e) {
+                    console.warn("[VideoSplitBatch] browse failed", e);
                 }
             };
 
-            // Patch inputEl once it exists: attach autocomplete listeners
-            const patchInputEl = (el) => {
-                if (el._vsb_patched) return;
-                el._vsb_patched = true;
-
-                el.addEventListener("input", () => {
-                    clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(async () => {
-                        const suggestions = await fetchSuggestions(el.value);
-                        showDropdown(suggestions, el);
-                    }, 200);
+            const createRow = (text, isDir) => {
+                const row = document.createElement("div");
+                row.textContent = text;
+                Object.assign(row.style, {
+                    padding: "4px 8px", cursor: "pointer", borderRadius: "3px",
+                    color: isDir ? "#6cb6ff" : "#ddd",
                 });
-
-                el.addEventListener("blur", () => {
-                    setTimeout(() => dropdown.style.display = "none", 200);
-                });
-
-                el.addEventListener("focus", () => {
-                    clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(async () => {
-                        const suggestions = await fetchSuggestions(el.value);
-                        showDropdown(suggestions, el);
-                    }, 100);
-                });
+                row.onmouseenter = () => row.style.background = "#333";
+                row.onmouseleave = () => row.style.background = "";
+                return row;
             };
 
-            // Intercept inputEl being set by ComfyUI (it's created lazily on click)
-            let _inputEl = pathWidget.inputEl || null;
-            Object.defineProperty(pathWidget, "inputEl", {
-                set(el) {
-                    _inputEl = el;
-                    if (el) patchInputEl(el);
-                },
-                get() { return _inputEl; },
-                configurable: true,
+            // Add Browse button widget
+            const browseWidget = node.addWidget("button", "Browse Video", null, () => {
+                const startPath = pathWidget.value || "~/";
+                overlay.style.display = "flex";
+                navigateTo(startPath);
             });
-            // If inputEl already exists at creation time, patch it now
-            if (_inputEl) patchInputEl(_inputEl);
+            browseWidget.serialize = false;
         };
     },
 });
