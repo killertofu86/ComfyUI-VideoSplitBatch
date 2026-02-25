@@ -143,7 +143,11 @@ app.registerExtension({
 
             // Add Browse button widget
             const browseWidget = node.addWidget("button", "Browse Video", null, () => {
-                const startPath = pathWidget.value || "~/";
+                let startPath = pathWidget.value || "~/";
+                // If path points to a file, open its directory
+                if (startPath && !startPath.endsWith("/")) {
+                    startPath = startPath.substring(0, startPath.lastIndexOf("/") + 1) || "~/";
+                }
                 overlay.style.display = "flex";
                 navigateTo(startPath);
             });
