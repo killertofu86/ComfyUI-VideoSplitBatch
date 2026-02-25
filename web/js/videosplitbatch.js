@@ -73,6 +73,13 @@ app.registerExtension({
             overlay.onclick = (e) => { if (e.target === overlay) overlay.style.display = "none"; };
             document.body.appendChild(overlay);
 
+            // Cleanup overlay on node removal
+            const origRemoved = node.onRemoved;
+            node.onRemoved = function () {
+                overlay.remove();
+                origRemoved?.apply(this, arguments);
+            };
+
             const navigateTo = async (path) => {
                 try {
                     const resp = await api.fetchApi(
