@@ -131,6 +131,16 @@ app.registerExtension({
                 return row;
             };
 
+            // Sync manual current_segment changes to server
+            const segWidget = node.widgets?.find(w => w.name === "current_segment");
+            if (segWidget) {
+                const origCallback = segWidget.callback;
+                segWidget.callback = function (value) {
+                    origCallback?.apply(this, arguments);
+                    api.fetchApi("/videosplitbatch/reset?id=" + node.id + "&value=" + Math.round(value));
+                };
+            }
+
             // Add Browse button widget
             const browseWidget = node.addWidget("button", "Browse Video", null, () => {
                 const startPath = pathWidget.value || "~/";

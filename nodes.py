@@ -8,6 +8,15 @@ from server import PromptServer
 from comfy.model_management import InterruptProcessingException
 
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
+loop_indexes = {}  # {unique_id: next_segment} — server-side auto-increment
+
+
+@PromptServer.instance.routes.get("/videosplitbatch/reset")
+async def reset_loop(request):
+    node_id = request.query.get("id", "")
+    value = int(request.query.get("value", "0"))
+    loop_indexes[node_id] = value
+    return web.json_response({"ok": True, "segment": value})
 
 
 @PromptServer.instance.routes.get("/videosplitbatch/browse")
@@ -62,6 +71,9 @@ class VideoSplitBatch:
 
     def load_segment(self, video_path, frames_per_segment, current_segment, unique_id):
         video_path = os.path.expanduser(video_path)
+        # Server-side auto-increment: override widget value if we have a tracked index
+        if unique_id in loop_indexes:
+            current_segment = loop_indexes[unique_id]
         cap = None
         try:
             cap = cv2.VideoCapture(video_path)
@@ -99,6 +111,7 @@ class VideoSplitBatch:
                 cap.release()
 
         next_segment = current_segment + 1
+        loop_indexes[unique_id] = next_segment
         return {"ui": {"next_segment": [next_segment], "total_segments": [total_segments]},
                 "result": (images, current_segment, total_segments)}
 
