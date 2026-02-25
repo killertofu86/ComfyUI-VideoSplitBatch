@@ -2,9 +2,43 @@ import cv2
 import numpy as np
 import torch
 import math
+import os
+from aiohttp import web
+from server import PromptServer
 from comfy.model_management import InterruptProcessingException
 
 loop_indexes = {}  # Modul-Ebene
+
+VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
+
+@PromptServer.instance.routes.get("/videosplitbatch/autocomplete")
+async def autocomplete(request):
+    path = request.query.get("path", "")
+    path = os.path.expanduser(path)
+
+    if os.path.isdir(path):
+        directory, prefix = path, ""
+    else:
+        directory, prefix = os.path.split(path)
+
+    if not os.path.isdir(directory):
+        return web.json_response([])
+
+    results = []
+    for entry in sorted(os.scandir(directory), key=lambda e: (not e.is_dir(), e.name)):
+        if not entry.name.startswith(prefix):
+            continue
+        if entry.is_dir():
+            results.append(entry.path + "/")
+        elif os.path.splitext(entry.name)[1].lower() in VIDEO_EXTS:
+            results.append(entry.path)
+
+    return web.json_response(results[:50])
+
+@PromptServer.instance.routes.get("/videosplitbatch/loop-index")
+async def get_loop_index(request):
+    node_id = request.query.get("id", "")
+    return web.json_response({"segment": loop_indexes.get(node_id, 0)})
 
 class VideoSplitBatch:
     @classmethod
