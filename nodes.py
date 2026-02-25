@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import torch
 import math
-
+from comfy.model_management import InterruptProcessingException
 
 class VideoSplitBatch:
     @classmethod
@@ -21,25 +21,30 @@ class VideoSplitBatch:
     CATEGORY = "video"
 
     def load_segment(self, video_path, frames_per_segment, current_segment):
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        total_segments = math.ceil(total_frames / frames_per_segment)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_segments = math.ceil(total_frames / frames_per_segment)
 
-        start_frame = current_segment * frames_per_segment
-        end_frame = min(start_frame + frames_per_segment, total_frames)
+            start_frame = current_segment * frames_per_segment
+            end_frame = min(start_frame + frames_per_segment, total_frames)
+            
+            if start_frame >= total_frames:
+                raise InterruptProcessingException()        
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        frames = []
-        for i in range(start_frame, end_frame):
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = frame.astype(np.float32) / 255.0
-            frames.append(frame)
-        cap.release()
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            frames = []
+            for i in range(start_frame, end_frame):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = frame.astype(np.float32) / 255.0
+                frames.append(frame)
 
-        images = torch.from_numpy(np.stack(frames))
+            images = torch.from_numpy(np.stack(frames))
+        finally:
+            cap.release()
         return (images, current_segment, total_segments)   
 
 
