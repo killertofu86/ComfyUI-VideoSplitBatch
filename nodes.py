@@ -23,6 +23,10 @@ class VideoSplitBatch:
     FUNCTION = "load_segment"
     CATEGORY = "video"
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
     def load_segment(self, video_path, frames_per_segment, current_segment, unique_id):
         try:
             cap = cv2.VideoCapture(video_path)
