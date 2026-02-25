@@ -19,4 +19,14 @@ Loading all frames at once causes 18–30GB swap on machines with 32GB RAM. This
 
 ## Installation
 
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/killertofu86/ComfyUI-VideoSplitBatch
+pip install -r requirements.txt
+```
 
+Restart ComfyUI after installation.
+
+## License
+
+MIT
