@@ -28,7 +28,6 @@ class VideoSplitBatch:
         return float("nan")
 
     def load_segment(self, video_path, frames_per_segment, current_segment, unique_id):
-        print(f"[VideoSplitBatch] unique_id: {unique_id}, loop_indexes: {loop_indexes}")
         try:
             cap = cv2.VideoCapture(video_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -37,6 +36,8 @@ class VideoSplitBatch:
             current_segment = loop_indexes.get(unique_id, current_segment)
             start_frame = current_segment * frames_per_segment
             end_frame = min(start_frame + frames_per_segment, total_frames)
+
+            print(f"[VideoSplitBatch] {video_path}: Frames {start_frame}–{end_frame-1} | Segment {current_segment+1}/{total_segments}")
 
             if start_frame >= total_frames:
                 raise InterruptProcessingException()
