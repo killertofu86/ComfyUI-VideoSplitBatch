@@ -7,14 +7,33 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "VideoSplitBatch") return;
 
+        // --- Auto-increment current_segment after execution (robust: onExecuted on prototype) ---
+        const origExecuted = nodeType.prototype.onExecuted;
+        nodeType.prototype.onExecuted = function (message) {
+            origExecuted?.apply(this, arguments);
+            const node = this;
+            api.fetchApi("/videosplitbatch/loop-index?id=" + node.id)
+                .then(r => r.json())
+                .then(data => {
+                    const segWidget = node.widgets?.find(w => w.name === "current_segment");
+                    if (segWidget) {
+                        segWidget.value = data.segment;
+                        app.graph.setDirtyCanvas(true);
+                    }
+                })
+                .catch(e => console.warn("[VideoSplitBatch] loop-index fetch failed", e));
+        };
+
+        // --- Autocomplete for video_path ---
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             origCreated?.apply(this, arguments);
 
-            const pathWidget = this.widgets?.find(w => w.name === "video_path");
+            const node = this;
+            const pathWidget = node.widgets?.find(w => w.name === "video_path");
             if (!pathWidget) return;
 
-            // Autocomplete dropdown
+            // Dropdown element
             const dropdown = document.createElement("ul");
             Object.assign(dropdown.style, {
                 position: "fixed",
@@ -56,9 +75,9 @@ app.registerExtension({
                 const rect = inputEl.getBoundingClientRect();
                 Object.assign(dropdown.style, {
                     display: "block",
-                    top: (rect.bottom + window.scrollY) + "px",
-                    left: (rect.left + window.scrollX) + "px",
-                    width: rect.width + "px",
+                    top: (rect.bottom + 4) + "px",
+                    left: rect.left + "px",
+                    width: Math.max(rect.width, 300) + "px",
                 });
                 for (const s of suggestions) {
                     const li = document.createElement("li");
@@ -69,79 +88,60 @@ app.registerExtension({
                     li.addEventListener("mousedown", (e) => {
                         e.preventDefault();
                         pathWidget.value = s;
+                        pathWidget.callback?.(s);
+                        if (pathWidget.inputEl) pathWidget.inputEl.value = s;
                         dropdown.style.display = "none";
+                        // Directory selected → trigger another autocomplete
+                        if (s.endsWith("/")) {
+                            clearTimeout(debounceTimer);
+                            debounceTimer = setTimeout(async () => {
+                                const sug = await fetchSuggestions(s);
+                                if (pathWidget.inputEl) showDropdown(sug, pathWidget.inputEl);
+                            }, 50);
+                        }
                     });
                     dropdown.appendChild(li);
                 }
             };
 
-            // Patch widget callback to intercept typing
-            const origCallback = pathWidget.callback;
-            pathWidget.callback = function (value) {
-                origCallback?.call(this, value);
-            };
+            // Patch inputEl once it exists: attach autocomplete listeners
+            const patchInputEl = (el) => {
+                if (el._vsb_patched) return;
+                el._vsb_patched = true;
 
-            // Hook into widget input element when it gets focus
-            const origDraw = pathWidget.draw;
-            pathWidget.inputEl?.addEventListener("input", (e) => {
-                clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(async () => {
-                    const suggestions = await fetchSuggestions(e.target.value);
-                    showDropdown(suggestions, e.target);
-                }, 200);
-            });
-
-            pathWidget.inputEl?.addEventListener("blur", () => {
-                setTimeout(() => dropdown.style.display = "none", 150);
-            });
-
-            // Also hook after widget is rendered (ComfyUI creates inputEl lazily)
-            const patchInput = () => {
-                if (!pathWidget.inputEl) return;
-                if (pathWidget._vsb_patched) return;
-                pathWidget._vsb_patched = true;
-                pathWidget.inputEl.addEventListener("input", async (e) => {
+                el.addEventListener("input", () => {
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(async () => {
-                        const suggestions = await fetchSuggestions(e.target.value);
-                        showDropdown(suggestions, e.target);
+                        const suggestions = await fetchSuggestions(el.value);
+                        showDropdown(suggestions, el);
                     }, 200);
                 });
-                pathWidget.inputEl.addEventListener("blur", () => {
-                    setTimeout(() => dropdown.style.display = "none", 150);
+
+                el.addEventListener("blur", () => {
+                    setTimeout(() => dropdown.style.display = "none", 200);
+                });
+
+                el.addEventListener("focus", () => {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(async () => {
+                        const suggestions = await fetchSuggestions(el.value);
+                        showDropdown(suggestions, el);
+                    }, 100);
                 });
             };
 
-            // Poll briefly until inputEl exists
-            const poll = setInterval(() => {
-                patchInput();
-                if (pathWidget._vsb_patched) clearInterval(poll);
-            }, 100);
+            // Intercept inputEl being set by ComfyUI (it's created lazily on click)
+            let _inputEl = pathWidget.inputEl || null;
+            Object.defineProperty(pathWidget, "inputEl", {
+                set(el) {
+                    _inputEl = el;
+                    if (el) patchInputEl(el);
+                },
+                get() { return _inputEl; },
+                configurable: true,
+            });
+            // If inputEl already exists at creation time, patch it now
+            if (_inputEl) patchInputEl(_inputEl);
         };
-    },
-
-    // Auto-update current_segment after each execution
-    async setup() {
-        api.addEventListener("executed", async (event) => {
-            const nodeId = String(event.detail?.node);
-            const graph = app.graph;
-            if (!graph) return;
-            const node = graph.getNodeById(parseInt(nodeId));
-            if (!node || node.comfyClass !== "VideoSplitBatch") return;
-
-            try {
-                const resp = await api.fetchApi(
-                    "/videosplitbatch/loop-index?id=" + nodeId
-                );
-                const data = await resp.json();
-                const segWidget = node.widgets?.find(w => w.name === "current_segment");
-                if (segWidget) {
-                    segWidget.value = data.segment;
-                    app.graph.setDirtyCanvas(true);
-                }
-            } catch (e) {
-                console.warn("[VideoSplitBatch] loop-index fetch failed", e);
-            }
-        });
     },
 });

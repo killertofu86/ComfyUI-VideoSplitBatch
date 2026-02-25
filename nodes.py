@@ -25,7 +25,11 @@ async def autocomplete(request):
         return web.json_response([])
 
     results = []
-    for entry in sorted(os.scandir(directory), key=lambda e: (not e.is_dir(), e.name)):
+    try:
+        entries = sorted(os.scandir(directory), key=lambda e: (not e.is_dir(), e.name))
+    except PermissionError:
+        return web.json_response([])
+    for entry in entries:
         if not entry.name.startswith(prefix):
             continue
         if entry.is_dir():
@@ -62,19 +66,24 @@ class VideoSplitBatch:
         return float("nan")
 
     def load_segment(self, video_path, frames_per_segment, current_segment, unique_id):
+        video_path = os.path.expanduser(video_path)
+        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"[VideoSplitBatch] ERROR: Video does not exist or cannot be opened: {video_path}")
+                raise InterruptProcessingException()
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             total_segments = math.ceil(total_frames / frames_per_segment)
 
-            current_segment = loop_indexes.get(unique_id, current_segment)
             start_frame = current_segment * frames_per_segment
             end_frame = min(start_frame + frames_per_segment, total_frames)
 
-            print(f"[VideoSplitBatch] {video_path}: Frames {start_frame}–{end_frame-1} | Segment {current_segment+1}/{total_segments}")
-
             if start_frame >= total_frames:
+                print(f"[VideoSplitBatch] {video_path}: All segments done ({total_segments} total)")
                 raise InterruptProcessingException()
+
+            print(f"[VideoSplitBatch] {video_path}: Frames {start_frame}–{end_frame-1} | Segment {current_segment+1}/{total_segments}")
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             loop_indexes[unique_id] = current_segment + 1
@@ -88,9 +97,12 @@ class VideoSplitBatch:
                 frame = frame.astype(np.float32) / 255.0
                 frames.append(frame)
 
+            if not frames:
+                raise InterruptProcessingException()
             images = torch.from_numpy(np.stack(frames))
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
         return (images, current_segment, total_segments)
 
 
