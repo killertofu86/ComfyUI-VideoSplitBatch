@@ -4,6 +4,8 @@ import torch
 import math
 from comfy.model_management import InterruptProcessingException
 
+loop_indexes = {}  # Modul-Ebene
+
 class VideoSplitBatch:
     @classmethod
     def INPUT_TYPES(cls):
@@ -12,7 +14,8 @@ class VideoSplitBatch:
                 "video_path": ("STRING", {"default": "~/"}),
                 "frames_per_segment": ("INT", {"default": 121, "min": 1, "max": 9999}),
                 "current_segment": ("INT", {"default": 0, "min": 0, "max": 9999}),
-            }
+            },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("IMAGE", "INT", "INT")
@@ -20,19 +23,22 @@ class VideoSplitBatch:
     FUNCTION = "load_segment"
     CATEGORY = "video"
 
-    def load_segment(self, video_path, frames_per_segment, current_segment):
+    def load_segment(self, video_path, frames_per_segment, current_segment, unique_id):
         try:
             cap = cv2.VideoCapture(video_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             total_segments = math.ceil(total_frames / frames_per_segment)
 
+            current_segment = loop_indexes.get(unique_id, current_segment)
             start_frame = current_segment * frames_per_segment
             end_frame = min(start_frame + frames_per_segment, total_frames)
-            
+
             if start_frame >= total_frames:
-                raise InterruptProcessingException()        
+                raise InterruptProcessingException()
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            loop_indexes[unique_id] = current_segment + 1
+
             frames = []
             for i in range(start_frame, end_frame):
                 ret, frame = cap.read()
@@ -45,7 +51,7 @@ class VideoSplitBatch:
             images = torch.from_numpy(np.stack(frames))
         finally:
             cap.release()
-        return (images, current_segment, total_segments)   
+        return (images, current_segment, total_segments)
 
 
 NODE_CLASS_MAPPINGS = {"VideoSplitBatch": VideoSplitBatch}
